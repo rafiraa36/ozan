@@ -1,0 +1,885 @@
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import {
+  LayoutDashboard, User, Settings, LogOut, Users, Building2, Menu, X,
+  Plus, Pencil, Trash2, Search, ShieldCheck, Newspaper, Image as ImageIcon,
+  Trophy, CalendarDays, ChevronRight, Check, AlertTriangle, Eye, EyeOff,
+  Loader2, Inbox, ArrowRight
+} from "lucide-react";
+
+/* ============================================================
+   AEJ MANAGEMENT SYSTEM — PHASE 1
+   Landing page, Auth, Role system, Dashboard (Anggota/Ketua/Pembina)
+   Data disimpan lewat window.storage (shared = "database" organisasi,
+   personal = sesi login per perangkat/akun).
+   ============================================================ */
+
+const DIVISIONS_SEED = [
+  { id: "artistik", name: "Artistik", desc: "Desain grafis, ilustrasi, dan identitas visual AEJ." },
+  { id: "dokumentasi", name: "Dokumentasi", desc: "Fotografi dan videografi setiap kegiatan sekolah." },
+  { id: "bahasa", name: "Bahasa", desc: "Penyuntingan bahasa dan pengembangan naskah." },
+  { id: "liputan", name: "Liputan", desc: "Peliputan berita dan reportase lapangan." },
+  { id: "redaktur", name: "Redaktur", desc: "Penyuntingan akhir dan tata kelola penerbitan." },
+];
+
+const ROLE_LABEL = { anggota: "Anggota", ketua_umum: "Ketua Umum", pembina: "Pembina" };
+
+function simpleHash(str) {
+  let h1 = 1779033703, h2 = 3144134277;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+const SEED_USERS = [
+  { id: "u-pembina", username: "pembina.aej", password: simpleHash("Pembina#2026"), role: "pembina", name: "Pembina AEJ", division: null, jabatan: "Pembina AEJ", status: "aktif", createdAt: "2026-07-01" },
+  { id: "u-ketua", username: "ketua.aej", password: simpleHash("Ketua#2026"), role: "ketua_umum", name: "Ketua Umum AEJ", division: "redaktur", jabatan: "Ketua Umum", status: "aktif", createdAt: "2026-07-01" },
+  { id: "u-a1", username: "anggota.artistik", password: simpleHash("Anggota#2026"), role: "anggota", name: "Anggota Divisi Artistik", division: "artistik", jabatan: "Anggota", status: "aktif", createdAt: "2026-07-02" },
+  { id: "u-a2", username: "anggota.dokumentasi", password: simpleHash("Anggota#2026"), role: "anggota", name: "Anggota Divisi Dokumentasi", division: "dokumentasi", jabatan: "Anggota", status: "aktif", createdAt: "2026-07-02" },
+  { id: "u-a3", username: "anggota.bahasa", password: simpleHash("Anggota#2026"), role: "anggota", name: "Anggota Divisi Bahasa", division: "bahasa", jabatan: "Anggota", status: "aktif", createdAt: "2026-07-02" },
+  { id: "u-a4", username: "anggota.liputan", password: simpleHash("Anggota#2026"), role: "anggota", name: "Anggota Divisi Liputan", division: "liputan", jabatan: "Anggota", status: "aktif", createdAt: "2026-07-02" },
+];
+
+/* ---------------- storage helpers ---------------- */
+async function dbGetUsers() {
+  try {
+    const r = await window.storage.get("aej_users", true);
+    return JSON.parse(r.value);
+  } catch (e) { return null; }
+}
+async function dbSaveUsers(users) {
+  await window.storage.set("aej_users", JSON.stringify(users), true);
+}
+async function dbGetDivisions() {
+  try {
+    const r = await window.storage.get("aej_divisions", true);
+    return JSON.parse(r.value);
+  } catch (e) { return null; }
+}
+async function dbSaveDivisions(divisions) {
+  await window.storage.set("aej_divisions", JSON.stringify(divisions), true);
+}
+async function dbGetSession() {
+  try {
+    const r = await window.storage.get("aej_session", false);
+    return JSON.parse(r.value);
+  } catch (e) { return null; }
+}
+async function dbSaveSession(userId) {
+  await window.storage.set("aej_session", JSON.stringify({ userId }), false);
+}
+async function dbClearSession() {
+  try { await window.storage.delete("aej_session", false); } catch (e) { /* noop */ }
+}
+
+/* ---------------- small UI atoms ---------------- */
+function Toast({ toasts, onClose }) {
+  return (
+    <div style={{ position: "fixed", top: 16, right: 16, zIndex: 200, display: "flex", flexDirection: "column", gap: 8, maxWidth: 340 }}>
+      {toasts.map((t) => (
+        <div key={t.id} className="aej-toast" style={{ borderLeftColor: t.type === "error" ? "#B3261E" : t.type === "warn" ? "#C9A227" : "#0F1B3D" }}>
+          <div style={{ flex: 1 }}>
+            <p style={{ margin: 0, fontWeight: 600, fontSize: 13.5 }}>{t.title}</p>
+            {t.desc && <p style={{ margin: "2px 0 0", fontSize: 12.5, color: "#5b6272" }}>{t.desc}</p>}
+          </div>
+          <button onClick={() => onClose(t.id)} className="aej-toast-close" aria-label="Tutup notifikasi"><X size={14} /></button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ConfirmDialog({ open, title, desc, confirmLabel = "Ya, lanjutkan", danger, onConfirm, onCancel }) {
+  if (!open) return null;
+  return (
+    <div className="aej-overlay" onClick={onCancel}>
+      <div className="aej-dialog" onClick={(e) => e.stopPropagation()}>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+          <div style={{ width: 36, height: 36, borderRadius: 8, background: danger ? "#FBEAEA" : "#FBF3DA", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+            <AlertTriangle size={18} color={danger ? "#B3261E" : "#8A6D0B"} />
+          </div>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 16, fontFamily: "Poppins, sans-serif" }}>{title}</h3>
+            <p style={{ margin: "6px 0 0", fontSize: 13.5, color: "#5b6272", lineHeight: 1.5 }}>{desc}</p>
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+          <button className="aej-btn-ghost" onClick={onCancel}>Batal</button>
+          <button className={danger ? "aej-btn-danger" : "aej-btn-primary"} onClick={onConfirm}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmptyState({ icon: Icon = Inbox, title, desc }) {
+  return (
+    <div className="aej-empty">
+      <Icon size={26} color="#9AA3B5" />
+      <p style={{ margin: "10px 0 2px", fontWeight: 600, fontSize: 14 }}>{title}</p>
+      {desc && <p style={{ margin: 0, fontSize: 12.5, color: "#8a92a3" }}>{desc}</p>}
+    </div>
+  );
+}
+
+function Avatar({ name, size = 40 }) {
+  const initials = (name || "?").split(" ").filter(Boolean).slice(0, 2).map((w) => w[0]).join("").toUpperCase();
+  return (
+    <div style={{
+      width: size, height: size, borderRadius: "50%", background: "linear-gradient(135deg,#0F1B3D,#1B2E5C)",
+      color: "#E9C55B", display: "flex", alignItems: "center", justifyContent: "center",
+      fontWeight: 700, fontSize: size * 0.38, fontFamily: "Poppins, sans-serif", flexShrink: 0, border: "2px solid #E9C55B"
+    }}>{initials}</div>
+  );
+}
+
+function StatusPill({ status }) {
+  const map = {
+    aktif: { bg: "#E7F5EC", fg: "#1E7A42" },
+    nonaktif: { bg: "#F1F2F5", fg: "#6b7280" },
+  };
+  const s = map[status] || map.nonaktif;
+  return <span style={{ background: s.bg, color: s.fg, fontSize: 11.5, fontWeight: 600, padding: "3px 9px", borderRadius: 20 }}>{status === "aktif" ? "Aktif" : "Nonaktif"}</span>;
+}
+
+/* ================= LANDING PAGE ================= */
+function LandingPage({ onLoginClick, divisions }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const navItems = ["Beranda", "Tentang AEJ", "Struktur", "Divisi", "Berita", "Karya", "Prestasi", "Agenda", "Galeri"];
+  const scrollTo = (id) => { setMenuOpen(false); document.getElementById(id)?.scrollIntoView({ behavior: "smooth" }); };
+
+  return (
+    <div className="aej-landing">
+      <header className="aej-nav">
+        <div className="aej-nav-inner">
+          <div className="aej-brand" onClick={() => scrollTo("beranda")}>
+            <span className="aej-brand-mark">AEJ</span>
+            <span className="aej-brand-text">Management System</span>
+          </div>
+          <nav className="aej-nav-links">
+            {navItems.map((n) => (
+              <button key={n} onClick={() => scrollTo(n.toLowerCase().replace(/\s+/g, "-"))} className="aej-nav-link">{n}</button>
+            ))}
+          </nav>
+          <button className="aej-btn-gold" onClick={onLoginClick}>Login</button>
+          <button className="aej-burger" onClick={() => setMenuOpen((v) => !v)} aria-label="Menu"><Menu size={22} /></button>
+        </div>
+        {menuOpen && (
+          <div className="aej-mobile-menu">
+            {navItems.map((n) => (
+              <button key={n} onClick={() => scrollTo(n.toLowerCase().replace(/\s+/g, "-"))}>{n}</button>
+            ))}
+            <button onClick={onLoginClick} className="aej-btn-gold" style={{ marginTop: 8 }}>Login</button>
+          </div>
+        )}
+      </header>
+
+      <section id="beranda" className="aej-hero">
+        <div className="aej-hero-diagonal" />
+        <div className="aej-hero-inner">
+          <div>
+            <p className="aej-hero-kicker">Aliyah Education Journalist &middot; MAN 2 Deli Serdang</p>
+            <h1 className="aej-hero-title">AEJ Management<br />System</h1>
+            <p className="aej-hero-sub">Aliyah Education Journalist MAN 2 Deli Serdang</p>
+            <p className="aej-hero-desc">Platform digital untuk mendukung kegiatan jurnalistik, pelatihan, kreativitas, kolaborasi, dan pengelolaan organisasi AEJ.</p>
+            <button className="aej-btn-gold aej-btn-lg" onClick={onLoginClick}>LOGIN ANGGOTA <ArrowRight size={16} /></button>
+          </div>
+          <div className="aej-hero-visual">
+            <div className="aej-hero-card">
+              <Newspaper size={20} color="#0F1B3D" />
+              <div className="aej-hero-lines"><span /><span /><span style={{ width: "60%" }} /></div>
+            </div>
+            <div className="aej-hero-card" style={{ marginTop: 18, marginLeft: 34 }}>
+              <ImageIcon size={20} color="#0F1B3D" />
+              <div className="aej-hero-lines"><span style={{ width: "80%" }} /><span /></div>
+            </div>
+            <div className="aej-hero-card" style={{ marginTop: 18 }}>
+              <Trophy size={20} color="#0F1B3D" />
+              <div className="aej-hero-lines"><span style={{ width: "70%" }} /><span style={{ width: "40%" }} /></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="tentang-aej" className="aej-section">
+        <h2 className="aej-section-title">Tentang AEJ</h2>
+        <p className="aej-section-body">
+          Aliyah Education Journalist (AEJ) adalah organisasi jurnalistik siswa MAN 2 Deli Serdang yang mewadahi
+          minat siswa pada dunia tulis-menulis, fotografi, desain, dan pemberitaan sekolah. Melalui pelatihan
+          rutin dan penugasan lapangan, anggota AEJ dibina untuk menghasilkan karya jurnalistik yang berkualitas
+          sekaligus membangun kerja sama tim lintas divisi.
+        </p>
+      </section>
+
+      <section id="struktur" className="aej-section aej-section-alt">
+        <h2 className="aej-section-title">Struktur Organisasi</h2>
+        <div className="aej-struktur">
+          <div className="aej-struktur-node aej-struktur-top">Pembina</div>
+          <div className="aej-struktur-connector" />
+          <div className="aej-struktur-node aej-struktur-top">Ketua Umum</div>
+          <div className="aej-struktur-connector" />
+          <div className="aej-struktur-row">
+            {DIVISIONS_SEED.map((d) => (
+              <div key={d.id} className="aej-struktur-node">{d.name}</div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section id="divisi" className="aej-section">
+        <h2 className="aej-section-title">Divisi</h2>
+        <div className="aej-grid-5">
+          {(divisions || DIVISIONS_SEED).map((d) => (
+            <div key={d.id} className="aej-div-card">
+              <h3>{d.name}</h3>
+              <p>{d.desc}</p>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {[
+        { id: "berita", title: "Berita", icon: Newspaper, desc: "Berita dari kegiatan AEJ akan tampil di sini setelah dipublikasikan." },
+        { id: "karya", title: "Karya", icon: ImageIcon, desc: "Karya anggota yang disetujui akan ditampilkan di halaman ini." },
+        { id: "prestasi", title: "Prestasi", icon: Trophy, desc: "Prestasi AEJ dan anggota akan tercatat dan tampil di sini." },
+        { id: "agenda", title: "Agenda", icon: CalendarDays, desc: "Jadwal kegiatan AEJ akan tampil di sini." },
+        { id: "galeri", title: "Galeri", icon: ImageIcon, desc: "Dokumentasi visual kegiatan AEJ akan tampil di sini." },
+      ].map((s) => (
+        <section id={s.id} key={s.id} className="aej-section aej-section-alt">
+          <h2 className="aej-section-title">{s.title}</h2>
+          <EmptyState icon={s.icon} title="Belum ada data" desc={s.desc} />
+        </section>
+      ))}
+
+      <footer className="aej-footer">
+        <p style={{ margin: 0, fontWeight: 700, fontFamily: "Poppins, sans-serif" }}>ALIYAH EDUCATION JOURNALIST</p>
+        <p style={{ margin: "2px 0 0", color: "#B8C0D6", fontSize: 13 }}>MAN 2 Deli Serdang</p>
+      </footer>
+    </div>
+  );
+}
+
+/* ================= LOGIN MODAL ================= */
+function LoginModal({ onClose, onLogin, loading, error }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
+
+  return (
+    <div className="aej-overlay" onClick={onClose}>
+      <div className="aej-dialog" style={{ maxWidth: 380 }} onClick={(e) => e.stopPropagation()}>
+        <button className="aej-dialog-close" onClick={onClose} aria-label="Tutup"><X size={18} /></button>
+        <div style={{ textAlign: "center", marginBottom: 18 }}>
+          <div className="aej-brand-mark" style={{ margin: "0 auto 10px" }}>AEJ</div>
+          <h2 style={{ margin: 0, fontFamily: "Poppins, sans-serif", fontSize: 19 }}>Login Anggota</h2>
+          <p style={{ margin: "4px 0 0", fontSize: 12.5, color: "#8a92a3" }}>Masuk dengan akun AEJ kamu</p>
+        </div>
+        <label className="aej-label">Username</label>
+        <input className="aej-input" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="mis. anggota.artistik" autoFocus />
+        <label className="aej-label" style={{ marginTop: 12 }}>Password</label>
+        <div style={{ position: "relative" }}>
+          <input className="aej-input" type={showPw ? "text" : "password"} value={password} onChange={(e) => setPassword(e.target.value)} placeholder="••••••••"
+            onKeyDown={(e) => { if (e.key === "Enter") onLogin(username, password); }} />
+          <button type="button" className="aej-input-eye" onClick={() => setShowPw((v) => !v)}>{showPw ? <EyeOff size={16} /> : <Eye size={16} />}</button>
+        </div>
+        {error && <p style={{ color: "#B3261E", fontSize: 12.5, marginTop: 8 }}>{error}</p>}
+        <button className="aej-btn-primary" style={{ width: "100%", marginTop: 16, justifyContent: "center" }} disabled={loading} onClick={() => onLogin(username, password)}>
+          {loading ? <Loader2 size={16} className="aej-spin" /> : "Masuk"}
+        </button>
+        <div className="aej-demo-box">
+          <p style={{ margin: "0 0 6px", fontWeight: 600 }}>Akun demo:</p>
+          <p style={{ margin: 0 }}>Pembina — pembina.aej / Pembina#2026</p>
+          <p style={{ margin: 0 }}>Ketua Umum — ketua.aej / Ketua#2026</p>
+          <p style={{ margin: 0 }}>Anggota — anggota.artistik / Anggota#2026</p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= DASHBOARD SHELL ================= */
+function Sidebar({ role, active, onSelect, open, onClose }) {
+  const items = {
+    anggota: [
+      { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { id: "profil", label: "Profil Saya", icon: User },
+      { id: "pengaturan", label: "Pengaturan", icon: Settings },
+    ],
+    ketua_umum: [
+      { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { id: "anggota", label: "Kelola Anggota", icon: Users },
+      { id: "divisi", label: "Divisi", icon: Building2 },
+      { id: "profil", label: "Profil Saya", icon: User },
+      { id: "pengaturan", label: "Pengaturan", icon: Settings },
+    ],
+    pembina: [
+      { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
+      { id: "anggota", label: "Data Anggota", icon: Users },
+      { id: "divisi", label: "Divisi", icon: Building2 },
+      { id: "profil", label: "Profil Saya", icon: User },
+      { id: "pengaturan", label: "Pengaturan", icon: Settings },
+    ],
+  }[role];
+
+  return (
+    <>
+      {open && <div className="aej-sidebar-scrim" onClick={onClose} />}
+      <aside className={"aej-sidebar" + (open ? " aej-sidebar-open" : "")}>
+        <div className="aej-sidebar-brand">
+          <span className="aej-brand-mark aej-brand-mark-sm">AEJ</span>
+          <span style={{ fontFamily: "Poppins, sans-serif", fontWeight: 600, fontSize: 13.5, color: "#fff" }}>Management System</span>
+        </div>
+        <nav style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 2, padding: "0 10px" }}>
+          {items.map((it) => (
+            <button key={it.id} className={"aej-side-link" + (active === it.id ? " aej-side-link-active" : "")}
+              onClick={() => { onSelect(it.id); onClose(); }}>
+              <it.icon size={17} /> {it.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+    </>
+  );
+}
+
+function Topbar({ user, onBurger, onLogout }) {
+  return (
+    <div className="aej-topbar">
+      <button className="aej-burger aej-burger-dark" onClick={onBurger}><Menu size={22} /></button>
+      <div style={{ flex: 1 }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ textAlign: "right", display: "none" }} className="aej-topbar-name">
+          <p style={{ margin: 0, fontWeight: 600, fontSize: 13 }}>{user.name}</p>
+          <p style={{ margin: 0, fontSize: 11, color: "#8a92a3" }}>{ROLE_LABEL[user.role]}</p>
+        </div>
+        <Avatar name={user.name} size={34} />
+        <button className="aej-icon-btn" onClick={onLogout} title="Keluar"><LogOut size={17} /></button>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, icon: Icon }) {
+  return (
+    <div className="aej-stat-card">
+      <div className="aej-stat-icon"><Icon size={18} color="#0F1B3D" /></div>
+      <div>
+        <p style={{ margin: 0, fontSize: 12.5, color: "#8a92a3" }}>{label}</p>
+        <p style={{ margin: "2px 0 0", fontSize: 21, fontWeight: 700, fontFamily: "Poppins, sans-serif" }}>{value}</p>
+      </div>
+    </div>
+  );
+}
+
+/* ------------ member form dialog ------------ */
+function MemberFormDialog({ open, initial, divisions, onCancel, onSave }) {
+  const [form, setForm] = useState(initial || {});
+  useEffect(() => { setForm(initial || { name: "", username: "", division: divisions[0]?.id, jabatan: "Anggota", status: "aktif" }); }, [initial, open]);
+  if (!open) return null;
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  return (
+    <div className="aej-overlay" onClick={onCancel}>
+      <div className="aej-dialog" onClick={(e) => e.stopPropagation()}>
+        <button className="aej-dialog-close" onClick={onCancel}><X size={18} /></button>
+        <h3 style={{ margin: "0 0 14px", fontFamily: "Poppins, sans-serif" }}>{initial?.id ? "Edit Anggota" : "Tambah Anggota"}</h3>
+        <label className="aej-label">Nama lengkap</label>
+        <input className="aej-input" value={form.name || ""} onChange={(e) => set("name", e.target.value)} />
+        <label className="aej-label" style={{ marginTop: 10 }}>Username</label>
+        <input className="aej-input" value={form.username || ""} onChange={(e) => set("username", e.target.value)} disabled={!!initial?.id} />
+        <div style={{ display: "flex", gap: 10, marginTop: 10 }}>
+          <div style={{ flex: 1 }}>
+            <label className="aej-label">Divisi</label>
+            <select className="aej-input" value={form.division || ""} onChange={(e) => set("division", e.target.value)}>
+              {divisions.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </div>
+          <div style={{ flex: 1 }}>
+            <label className="aej-label">Jabatan</label>
+            <input className="aej-input" value={form.jabatan || ""} onChange={(e) => set("jabatan", e.target.value)} />
+          </div>
+        </div>
+        <label className="aej-label" style={{ marginTop: 10 }}>Status keanggotaan</label>
+        <select className="aej-input" value={form.status || "aktif"} onChange={(e) => set("status", e.target.value)}>
+          <option value="aktif">Aktif</option>
+          <option value="nonaktif">Nonaktif</option>
+        </select>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 18 }}>
+          <button className="aej-btn-ghost" onClick={onCancel}>Batal</button>
+          <button className="aej-btn-primary" onClick={() => onSave(form)} disabled={!form.name || !form.username || !form.division}>Simpan</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ================= MAIN APP ================= */
+export default function AEJApp() {
+  const [booting, setBooting] = useState(true);
+  const [users, setUsers] = useState([]);
+  const [divisions, setDivisions] = useState(DIVISIONS_SEED);
+  const [session, setSession] = useState(null); // logged in user object
+  const [showLogin, setShowLogin] = useState(false);
+  const [loginLoading, setLoginLoading] = useState(false);
+  const [loginError, setLoginError] = useState("");
+  const [activeMenu, setActiveMenu] = useState("dashboard");
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [toasts, setToasts] = useState([]);
+  const [memberDialog, setMemberDialog] = useState({ open: false, initial: null });
+  const [confirmState, setConfirmState] = useState({ open: false });
+  const [search, setSearch] = useState("");
+  const [pwForm, setPwForm] = useState({ current: "", next: "", confirm: "" });
+
+  const pushToast = useCallback((title, desc, type = "ok") => {
+    const id = Math.random().toString(36).slice(2);
+    setToasts((t) => [...t, { id, title, desc, type }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4200);
+  }, []);
+  const closeToast = (id) => setToasts((t) => t.filter((x) => x.id !== id));
+
+  // boot: seed + load session
+  useEffect(() => {
+    (async () => {
+      let u = await dbGetUsers();
+      if (!u) { u = SEED_USERS; await dbSaveUsers(u); }
+      let d = await dbGetDivisions();
+      if (!d) { d = DIVISIONS_SEED; await dbSaveDivisions(d); }
+      setUsers(u); setDivisions(d);
+      const s = await dbGetSession();
+      if (s?.userId) {
+        const found = u.find((x) => x.id === s.userId);
+        if (found) setSession(found);
+      }
+      setBooting(false);
+    })();
+  }, []);
+
+  const handleLogin = async (username, password) => {
+    setLoginError("");
+    if (!username || !password) { setLoginError("Username dan password wajib diisi."); return; }
+    setLoginLoading(true);
+    await new Promise((r) => setTimeout(r, 350));
+    const found = users.find((u) => u.username.toLowerCase() === username.trim().toLowerCase());
+    if (!found || found.password !== simpleHash(password)) {
+      setLoginLoading(false);
+      setLoginError("Username atau password salah.");
+      return;
+    }
+    if (found.status === "nonaktif") {
+      setLoginLoading(false);
+      setLoginError("Akun ini nonaktif. Hubungi Ketua Umum atau Pembina.");
+      return;
+    }
+    await dbSaveSession(found.id);
+    setSession(found);
+    setLoginLoading(false);
+    setShowLogin(false);
+    setActiveMenu("dashboard");
+    pushToast("Login berhasil", `Selamat datang, ${found.name}.`);
+  };
+
+  const handleLogout = async () => {
+    await dbClearSession();
+    setSession(null);
+    pushToast("Berhasil keluar", "Sampai jumpa lagi!");
+  };
+
+  const persistUsers = async (next) => {
+    setUsers(next);
+    await dbSaveUsers(next);
+  };
+
+  const saveMember = async (form) => {
+    if (form.id) {
+      const next = users.map((u) => (u.id === form.id ? { ...u, ...form } : u));
+      await persistUsers(next);
+      if (session?.id === form.id) setSession((s) => ({ ...s, ...form }));
+      pushToast("Anggota diperbarui", `${form.name} berhasil disimpan.`);
+    } else {
+      if (users.some((u) => u.username.toLowerCase() === form.username.toLowerCase())) {
+        pushToast("Username sudah dipakai", "Gunakan username lain.", "error");
+        return;
+      }
+      const tempPw = "Aej" + Math.floor(1000 + Math.random() * 9000);
+      const newUser = { id: "u-" + Math.random().toString(36).slice(2, 9), role: "anggota", password: simpleHash(tempPw), createdAt: new Date().toISOString().slice(0, 10), ...form };
+      await persistUsers([...users, newUser]);
+      pushToast("Anggota ditambahkan", `Password sementara: ${tempPw} (sampaikan ke anggota, minta segera diganti).`);
+    }
+    setMemberDialog({ open: false, initial: null });
+  };
+
+  const askDeactivate = (member) => {
+    setConfirmState({
+      open: true,
+      title: member.status === "aktif" ? "Nonaktifkan anggota?" : "Aktifkan kembali anggota?",
+      desc: `${member.name} akan diubah statusnya menjadi ${member.status === "aktif" ? "Nonaktif" : "Aktif"}.`,
+      danger: member.status === "aktif",
+      onConfirm: async () => {
+        const next = users.map((u) => (u.id === member.id ? { ...u, status: u.status === "aktif" ? "nonaktif" : "aktif" } : u));
+        await persistUsers(next);
+        setConfirmState({ open: false });
+        pushToast("Status diperbarui", `${member.name} sekarang ${member.status === "aktif" ? "nonaktif" : "aktif"}.`);
+      },
+    });
+  };
+
+  const changePassword = async () => {
+    if (!pwForm.current || !pwForm.next || !pwForm.confirm) { pushToast("Lengkapi form", "Semua kolom wajib diisi.", "error"); return; }
+    if (session.password !== simpleHash(pwForm.current)) { pushToast("Password lama salah", "", "error"); return; }
+    if (pwForm.next !== pwForm.confirm) { pushToast("Konfirmasi tidak cocok", "", "error"); return; }
+    const next = users.map((u) => (u.id === session.id ? { ...u, password: simpleHash(pwForm.next) } : u));
+    await persistUsers(next);
+    setSession((s) => ({ ...s, password: simpleHash(pwForm.next) }));
+    setPwForm({ current: "", next: "", confirm: "" });
+    pushToast("Password diganti", "Gunakan password baru untuk login berikutnya.");
+  };
+
+  const stats = useMemo(() => {
+    const anggota = users.filter((u) => u.role === "anggota");
+    return {
+      totalAnggota: anggota.length,
+      aktif: anggota.filter((u) => u.status === "aktif").length,
+      totalDivisi: divisions.length,
+    };
+  }, [users, divisions]);
+
+  const filteredMembers = useMemo(() => {
+    const anggota = users.filter((u) => u.role !== "pembina");
+    if (!search.trim()) return anggota;
+    const q = search.toLowerCase();
+    return anggota.filter((u) => u.name.toLowerCase().includes(q) || u.username.toLowerCase().includes(q) || (u.division || "").includes(q));
+  }, [users, search]);
+
+  if (booting) {
+    return (
+      <div style={{ minHeight: 480, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 10, fontFamily: "Montserrat, sans-serif" }}>
+        <GlobalStyle />
+        <Loader2 size={26} className="aej-spin" color="#0F1B3D" />
+        <p style={{ color: "#5b6272", fontSize: 13.5 }}>Menyiapkan AEJ Management System…</p>
+      </div>
+    );
+  }
+
+  if (!session) {
+    return (
+      <div className="aej-root">
+        <GlobalStyle />
+        <LandingPage onLoginClick={() => { setShowLogin(true); setLoginError(""); }} divisions={divisions} />
+        {showLogin && <LoginModal onClose={() => setShowLogin(false)} onLogin={handleLogin} loading={loginLoading} error={loginError} />}
+        <Toast toasts={toasts} onClose={closeToast} />
+      </div>
+    );
+  }
+
+  const divisionName = (id) => divisions.find((d) => d.id === id)?.name || "—";
+
+  return (
+    <div className="aej-root aej-app">
+      <GlobalStyle />
+      <Sidebar role={session.role} active={activeMenu} onSelect={setActiveMenu} open={sidebarOpen} onClose={() => setSidebarOpen(false)} />
+      <div className="aej-main">
+        <Topbar user={session} onBurger={() => setSidebarOpen(true)} onLogout={handleLogout} />
+        <div className="aej-content">
+
+          {activeMenu === "dashboard" && session.role === "anggota" && (
+            <>
+              <h1 className="aej-page-title">Dashboard Saya</h1>
+              <div className="aej-profile-banner">
+                <Avatar name={session.name} size={58} />
+                <div>
+                  <p style={{ margin: 0, fontWeight: 700, fontSize: 16, fontFamily: "Poppins, sans-serif" }}>{session.name}</p>
+                  <p style={{ margin: "2px 0 0", fontSize: 13, color: "#5b6272" }}>{divisionName(session.division)} &middot; {session.jabatan}</p>
+                  <div style={{ marginTop: 6 }}><StatusPill status={session.status} /></div>
+                </div>
+              </div>
+              <div className="aej-stat-grid">
+                <StatCard label="Total Tugas" value={0} icon={LayoutDashboard} />
+                <StatCard label="Rata-rata Nilai" value="—" icon={ShieldCheck} />
+                <StatCard label="Persentase Kehadiran" value="—" icon={CalendarDays} />
+                <StatCard label="Jumlah Karya" value={0} icon={ImageIcon} />
+              </div>
+              <div className="aej-card" style={{ marginTop: 18 }}>
+                <EmptyState icon={LayoutDashboard} title="Belum ada data tugas, nilai, atau absensi"
+                  desc="Fitur Materi, Tugas, Penilaian, dan Absensi akan aktif pada Phase 2 pengembangan." />
+              </div>
+            </>
+          )}
+
+          {activeMenu === "dashboard" && session.role === "ketua_umum" && (
+            <>
+              <h1 className="aej-page-title">Dashboard Ketua Umum</h1>
+              <div className="aej-stat-grid">
+                <StatCard label="Total Anggota" value={stats.totalAnggota} icon={Users} />
+                <StatCard label="Anggota Aktif" value={stats.aktif} icon={ShieldCheck} />
+                <StatCard label="Total Divisi" value={stats.totalDivisi} icon={Building2} />
+                <StatCard label="Rata-rata Nilai AEJ" value="—" icon={LayoutDashboard} />
+              </div>
+              <div className="aej-card" style={{ marginTop: 18 }}>
+                <EmptyState title="Modul Tugas, Penilaian, Absensi & Raport belum aktif" desc="Menyusul pada Phase 2–4 sesuai urutan pembangunan." />
+              </div>
+            </>
+          )}
+
+          {activeMenu === "dashboard" && session.role === "pembina" && (
+            <>
+              <h1 className="aej-page-title">Dashboard Pembina</h1>
+              <div className="aej-stat-grid">
+                <StatCard label="Total Anggota" value={stats.totalAnggota} icon={Users} />
+                <StatCard label="Total Divisi" value={stats.totalDivisi} icon={Building2} />
+                <StatCard label="Rata-rata Nilai AEJ" value="—" icon={ShieldCheck} />
+                <StatCard label="Persentase Capaian Passing Grade" value="—" icon={LayoutDashboard} />
+              </div>
+              <div className="aej-card" style={{ marginTop: 18 }}>
+                <EmptyState title="Data monitoring lengkap menyusul" desc="Statistik performa divisi aktif setelah modul Tugas & Penilaian dibangun (Phase 2)." />
+              </div>
+            </>
+          )}
+
+          {activeMenu === "anggota" && (session.role === "ketua_umum" || session.role === "pembina") && (
+            <>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+                <h1 className="aej-page-title" style={{ margin: 0 }}>{session.role === "ketua_umum" ? "Kelola Anggota" : "Data Anggota"}</h1>
+                {session.role === "ketua_umum" && (
+                  <button className="aej-btn-primary" onClick={() => setMemberDialog({ open: true, initial: null })}><Plus size={16} /> Tambah Anggota</button>
+                )}
+              </div>
+              <div className="aej-search-bar">
+                <Search size={16} color="#8a92a3" />
+                <input placeholder="Cari nama, username, atau divisi…" value={search} onChange={(e) => setSearch(e.target.value)} />
+              </div>
+              <div className="aej-table-wrap">
+                <table className="aej-table">
+                  <thead><tr><th>Nama</th><th>Username</th><th>Divisi</th><th>Jabatan</th><th>Status</th>{session.role === "ketua_umum" && <th>Aksi</th>}</tr></thead>
+                  <tbody>
+                    {filteredMembers.map((m) => (
+                      <tr key={m.id}>
+                        <td><div style={{ display: "flex", alignItems: "center", gap: 8 }}><Avatar name={m.name} size={28} />{m.name}</div></td>
+                        <td>{m.username}</td>
+                        <td>{divisionName(m.division)}</td>
+                        <td>{m.jabatan}</td>
+                        <td><StatusPill status={m.status} /></td>
+                        {session.role === "ketua_umum" && (
+                          <td>
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <button className="aej-icon-btn" onClick={() => setMemberDialog({ open: true, initial: m })}><Pencil size={14} /></button>
+                              <button className="aej-icon-btn" onClick={() => askDeactivate(m)}><Trash2 size={14} /></button>
+                            </div>
+                          </td>
+                        )}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {filteredMembers.length === 0 && <EmptyState title="Tidak ada anggota ditemukan" desc="Coba kata kunci lain." />}
+              </div>
+            </>
+          )}
+
+          {activeMenu === "divisi" && (
+            <>
+              <h1 className="aej-page-title">Divisi AEJ</h1>
+              <div className="aej-grid-5">
+                {divisions.map((d) => {
+                  const count = users.filter((u) => u.division === d.id).length;
+                  return (
+                    <div key={d.id} className="aej-div-card">
+                      <h3>{d.name}</h3>
+                      <p>{d.desc}</p>
+                      <p style={{ marginTop: 10, fontSize: 12.5, color: "#0F1B3D", fontWeight: 600 }}>{count} anggota</p>
+                    </div>
+                  );
+                })}
+              </div>
+            </>
+          )}
+
+          {activeMenu === "profil" && (
+            <>
+              <h1 className="aej-page-title">Profil Saya</h1>
+              <div className="aej-profile-banner">
+                <Avatar name={session.name} size={58} />
+                <div>
+                  <p style={{ margin: 0, fontWeight: 700, fontSize: 16, fontFamily: "Poppins, sans-serif" }}>{session.name}</p>
+                  <p style={{ margin: "2px 0 0", fontSize: 13, color: "#5b6272" }}>{ROLE_LABEL[session.role]}{session.division ? ` · ${divisionName(session.division)}` : ""}</p>
+                </div>
+              </div>
+              <div className="aej-card" style={{ marginTop: 16 }}>
+                <div className="aej-detail-row"><span>Username</span><b>{session.username}</b></div>
+                <div className="aej-detail-row"><span>Jabatan</span><b>{session.jabatan}</b></div>
+                <div className="aej-detail-row"><span>Status Keanggotaan</span><StatusPill status={session.status} /></div>
+                <div className="aej-detail-row"><span>Bergabung sejak</span><b>{session.createdAt}</b></div>
+              </div>
+            </>
+          )}
+
+          {activeMenu === "pengaturan" && (
+            <>
+              <h1 className="aej-page-title">Pengaturan</h1>
+              <div className="aej-card" style={{ maxWidth: 420 }}>
+                <h3 style={{ marginTop: 0, fontFamily: "Poppins, sans-serif", fontSize: 15 }}>Ganti Password</h3>
+                <label className="aej-label">Password saat ini</label>
+                <input className="aej-input" type="password" value={pwForm.current} onChange={(e) => setPwForm((f) => ({ ...f, current: e.target.value }))} />
+                <label className="aej-label" style={{ marginTop: 10 }}>Password baru</label>
+                <input className="aej-input" type="password" value={pwForm.next} onChange={(e) => setPwForm((f) => ({ ...f, next: e.target.value }))} />
+                <label className="aej-label" style={{ marginTop: 10 }}>Konfirmasi password baru</label>
+                <input className="aej-input" type="password" value={pwForm.confirm} onChange={(e) => setPwForm((f) => ({ ...f, confirm: e.target.value }))} />
+                <button className="aej-btn-primary" style={{ marginTop: 14 }} onClick={changePassword}>Simpan Password</button>
+              </div>
+              <button className="aej-btn-ghost" style={{ marginTop: 16 }} onClick={handleLogout}><LogOut size={15} /> Keluar dari akun</button>
+            </>
+          )}
+
+        </div>
+      </div>
+
+      <MemberFormDialog open={memberDialog.open} initial={memberDialog.initial} divisions={divisions}
+        onCancel={() => setMemberDialog({ open: false, initial: null })} onSave={saveMember} />
+      <ConfirmDialog open={confirmState.open} title={confirmState.title} desc={confirmState.desc} danger={confirmState.danger}
+        onConfirm={confirmState.onConfirm} onCancel={() => setConfirmState({ open: false })} />
+      <Toast toasts={toasts} onClose={closeToast} />
+    </div>
+  );
+}
+
+/* ================= GLOBAL STYLE ================= */
+function GlobalStyle() {
+  return (
+    <style>{`
+      @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@500;600;700;800&family=Montserrat:wght@400;500;600;700&display=swap');
+      .aej-root, .aej-root * { box-sizing: border-box; font-family: 'Montserrat', sans-serif; }
+      .aej-root { color: #14171F; }
+      .aej-spin { animation: aej-spin 0.9s linear infinite; }
+      @keyframes aej-spin { to { transform: rotate(360deg); } }
+
+      /* ---- buttons ---- */
+      .aej-btn-primary, .aej-btn-gold, .aej-btn-ghost, .aej-btn-danger {
+        border: none; cursor: pointer; border-radius: 6px; font-family: 'Montserrat', sans-serif;
+        font-weight: 600; font-size: 13.5px; padding: 9px 16px; display: inline-flex; align-items: center; gap: 6px;
+        transition: filter .15s ease, transform .15s ease;
+      }
+      .aej-btn-primary { background: #0F1B3D; color: #fff; }
+      .aej-btn-primary:hover { filter: brightness(1.18); }
+      .aej-btn-primary:disabled { opacity: .5; cursor: not-allowed; }
+      .aej-btn-gold { background: #C9A227; color: #0F1B3D; }
+      .aej-btn-gold:hover { filter: brightness(1.08); }
+      .aej-btn-lg { padding: 12px 22px; font-size: 14px; }
+      .aej-btn-ghost { background: #F1F2F5; color: #14171F; }
+      .aej-btn-ghost:hover { background: #E6E8EE; }
+      .aej-btn-danger { background: #B3261E; color: #fff; }
+      .aej-btn-danger:hover { filter: brightness(1.15); }
+
+      /* ---- landing ---- */
+      .aej-landing { background: #fff; }
+      .aej-nav { position: sticky; top: 0; z-index: 50; background: #0F1B3D; }
+      .aej-nav-inner { max-width: 1180px; margin: 0 auto; display: flex; align-items: center; gap: 18px; padding: 12px 20px; }
+      .aej-brand { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+      .aej-brand-mark { background: #C9A227; color: #0F1B3D; font-family: 'Poppins', sans-serif; font-weight: 800; font-size: 13px; padding: 6px 9px; border-radius: 6px; letter-spacing: .5px; }
+      .aej-brand-mark-sm { padding: 5px 8px; font-size: 12px; }
+      .aej-brand-text { color: #fff; font-family: 'Poppins', sans-serif; font-weight: 600; font-size: 14px; display: none; }
+      .aej-nav-links { display: none; gap: 4px; flex: 1; }
+      .aej-nav-link { background: none; border: none; color: #CBD3E6; font-size: 13px; padding: 8px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+      .aej-nav-link:hover { color: #fff; background: rgba(255,255,255,.06); }
+      .aej-burger { margin-left: auto; background: none; border: none; color: #fff; cursor: pointer; }
+      .aej-burger-dark { color: #14171F; }
+      .aej-mobile-menu { display: flex; flex-direction: column; gap: 2px; padding: 8px 16px 16px; background: #0F1B3D; }
+      .aej-mobile-menu button { background: none; border: none; color: #CBD3E6; text-align: left; padding: 10px 4px; font-size: 14px; cursor: pointer; border-bottom: 1px solid rgba(255,255,255,.08); }
+
+      .aej-hero { position: relative; background: #0F1B3D; overflow: hidden; padding: 56px 20px 70px; }
+      .aej-hero-diagonal { position: absolute; top: -40%; right: -10%; width: 60%; height: 180%; background: linear-gradient(135deg, rgba(201,162,39,.16), rgba(201,162,39,0)); transform: rotate(18deg); }
+      .aej-hero-inner { max-width: 1180px; margin: 0 auto; position: relative; display: grid; grid-template-columns: 1fr; gap: 40px; align-items: center; }
+      .aej-hero-kicker { color: #C9A227; font-size: 12.5px; font-weight: 600; margin: 0 0 14px; }
+      .aej-hero-title { font-family: 'Poppins', sans-serif; color: #fff; font-size: 34px; line-height: 1.15; font-weight: 700; margin: 0; }
+      .aej-hero-sub { color: #D8DEEE; font-size: 15px; margin: 12px 0 0; font-weight: 500; }
+      .aej-hero-desc { color: #AEB7CC; font-size: 14px; line-height: 1.6; margin: 14px 0 26px; max-width: 480px; }
+      .aej-hero-visual { display: none; }
+      .aej-hero-card { background: #fff; border-radius: 10px; padding: 14px; width: 220px; box-shadow: 0 18px 40px rgba(0,0,0,.25); }
+      .aej-hero-lines { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+      .aej-hero-lines span { display: block; height: 6px; border-radius: 3px; background: #E9ECF3; width: 100%; }
+
+      .aej-section { max-width: 1180px; margin: 0 auto; padding: 48px 20px; }
+      .aej-section-alt { background: #F7F8FA; max-width: none; }
+      .aej-section-alt > * { max-width: 1180px; margin-left: auto; margin-right: auto; }
+      .aej-section-title { font-family: 'Poppins', sans-serif; font-size: 22px; font-weight: 700; color: #0F1B3D; margin: 0 0 18px; position: relative; padding-bottom: 12px; }
+      .aej-section-title::after { content: ''; position: absolute; left: 0; bottom: 0; width: 46px; height: 3px; background: #C9A227; }
+      .aej-section-body { font-size: 14.5px; line-height: 1.75; color: #3d4250; max-width: 760px; }
+
+      .aej-struktur { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+      .aej-struktur-node { border: 1.5px solid #0F1B3D; color: #0F1B3D; font-weight: 600; font-size: 13px; padding: 10px 18px; border-radius: 6px; background: #fff; }
+      .aej-struktur-top { background: #0F1B3D; color: #fff; }
+      .aej-struktur-connector { width: 2px; height: 18px; background: #C9A227; }
+      .aej-struktur-row { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+
+      .aej-grid-5 { display: grid; grid-template-columns: repeat(auto-fit,minmax(210px,1fr)); gap: 14px; }
+      .aej-div-card { border: 1px solid #E4E6ED; border-radius: 8px; padding: 18px; background: #fff; }
+      .aej-div-card h3 { font-family: 'Poppins', sans-serif; font-size: 15px; margin: 0 0 8px; color: #0F1B3D; }
+      .aej-div-card p { margin: 0; font-size: 13px; color: #5b6272; line-height: 1.55; }
+
+      .aej-empty { border: 1.5px dashed #DADFEA; border-radius: 8px; padding: 34px 20px; text-align: center; display: flex; flex-direction: column; align-items: center; }
+      .aej-footer { background: #0B1530; color: #fff; text-align: center; padding: 30px 20px; }
+
+      /* ---- overlays / dialogs ---- */
+      .aej-overlay { position: fixed; inset: 0; background: rgba(10,14,30,.55); z-index: 100; display: flex; align-items: center; justify-content: center; padding: 16px; }
+      .aej-dialog { background: #fff; border-radius: 10px; padding: 22px; width: 100%; max-width: 460px; position: relative; max-height: 90vh; overflow-y: auto; }
+      .aej-dialog-close { position: absolute; top: 14px; right: 14px; background: none; border: none; cursor: pointer; color: #8a92a3; }
+      .aej-label { display: block; font-size: 12px; font-weight: 600; color: #3d4250; margin-bottom: 5px; }
+      .aej-input { width: 100%; border: 1px solid #DADFEA; border-radius: 6px; padding: 9px 12px; font-size: 13.5px; font-family: 'Montserrat', sans-serif; }
+      .aej-input:focus { outline: 2px solid #C9A227; outline-offset: 1px; border-color: #C9A227; }
+      .aej-input-eye { position: absolute; right: 10px; top: 9px; background: none; border: none; cursor: pointer; color: #8a92a3; }
+      .aej-demo-box { margin-top: 16px; background: #F7F8FA; border-radius: 6px; padding: 10px 12px; font-size: 11.5px; color: #5b6272; line-height: 1.6; }
+
+      .aej-toast { background: #fff; border-radius: 8px; border-left: 4px solid #0F1B3D; box-shadow: 0 10px 30px rgba(0,0,0,.15); padding: 12px 12px; display: flex; gap: 8px; align-items: flex-start; }
+      .aej-toast-close { background: none; border: none; cursor: pointer; color: #8a92a3; }
+
+      /* ---- app shell ---- */
+      .aej-app { display: flex; min-height: 100vh; background: #F5F6FA; }
+      .aej-sidebar { position: fixed; top: 0; left: 0; bottom: 0; width: 230px; background: #0F1B3D; transform: translateX(-100%); transition: transform .22s ease; z-index: 90; padding-top: 16px; }
+      .aej-sidebar-open { transform: translateX(0); }
+      .aej-sidebar-scrim { position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 80; }
+      .aej-sidebar-brand { display: flex; align-items: center; gap: 8px; padding: 4px 16px 16px; border-bottom: 1px solid rgba(255,255,255,.08); }
+      .aej-side-link { display: flex; align-items: center; gap: 10px; background: none; border: none; color: #C6CCDE; padding: 10px 12px; border-radius: 6px; font-size: 13.5px; cursor: pointer; text-align: left; }
+      .aej-side-link:hover { background: rgba(255,255,255,.06); color: #fff; }
+      .aej-side-link-active { background: #C9A227; color: #0F1B3D; font-weight: 600; }
+      .aej-main { flex: 1; min-width: 0; }
+      .aej-topbar { position: sticky; top: 0; z-index: 60; background: #fff; border-bottom: 1px solid #E4E6ED; padding: 10px 16px; display: flex; align-items: center; }
+      .aej-content { padding: 18px 16px 60px; max-width: 1080px; }
+      .aej-page-title { font-family: 'Poppins', sans-serif; font-size: 19px; font-weight: 700; color: #0F1B3D; margin: 0 0 16px; }
+
+      .aej-profile-banner { display: flex; align-items: center; gap: 14px; background: #fff; border: 1px solid #E4E6ED; border-radius: 10px; padding: 16px; }
+      .aej-stat-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(160px,1fr)); gap: 12px; margin-top: 16px; }
+      .aej-stat-card { background: #fff; border: 1px solid #E4E6ED; border-radius: 10px; padding: 14px; display: flex; align-items: center; gap: 12px; }
+      .aej-stat-icon { width: 38px; height: 38px; border-radius: 8px; background: #FBF3DA; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+      .aej-card { background: #fff; border: 1px solid #E4E6ED; border-radius: 10px; padding: 18px; }
+      .aej-detail-row { display: flex; justify-content: space-between; align-items: center; padding: 10px 0; border-bottom: 1px solid #F0F1F5; font-size: 13.5px; }
+      .aej-detail-row:last-child { border-bottom: none; }
+      .aej-detail-row span { color: #8a92a3; }
+
+      .aej-search-bar { display: flex; align-items: center; gap: 8px; background: #fff; border: 1px solid #DADFEA; border-radius: 8px; padding: 9px 12px; margin: 14px 0; max-width: 380px; }
+      .aej-search-bar input { border: none; outline: none; font-size: 13.5px; flex: 1; font-family: 'Montserrat', sans-serif; }
+      .aej-table-wrap { overflow-x: auto; background: #fff; border: 1px solid #E4E6ED; border-radius: 10px; }
+      .aej-table { width: 100%; border-collapse: collapse; min-width: 560px; }
+      .aej-table th { text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: #8a92a3; padding: 12px 14px; border-bottom: 1px solid #E4E6ED; white-space: nowrap; }
+      .aej-table td { padding: 11px 14px; font-size: 13.5px; border-bottom: 1px solid #F0F1F5; white-space: nowrap; }
+      .aej-table tr:last-child td { border-bottom: none; }
+      .aej-icon-btn { background: #F1F2F5; border: none; border-radius: 6px; width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; color: #3d4250; }
+      .aej-icon-btn:hover { background: #E6E8EE; }
+
+      @media (min-width: 720px) {
+        .aej-brand-text { display: inline; }
+        .aej-nav-links { display: flex; }
+        .aej-burger { display: none; }
+        .aej-hero-inner { grid-template-columns: 1.1fr 0.9fr; }
+        .aej-hero-title { font-size: 46px; }
+        .aej-hero-visual { display: block; }
+        .aej-sidebar { transform: translateX(0); position: sticky; height: 100vh; }
+        .aej-sidebar-scrim { display: none; }
+        .aej-burger-dark { display: none; }
+        .aej-content { padding: 26px 28px 60px; }
+        .aej-topbar { padding: 14px 24px; }
+        .aej-topbar-name { display: block !important; }
+      }
+    `}</style>
+  );
+}
